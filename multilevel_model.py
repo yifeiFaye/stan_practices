@@ -599,3 +599,127 @@ plt.xlabel('County-level uranium')
 plt.ylabel('Intercept estimate')
 plt.show()
 
+############
+# Modeling contextual effect
+# In some instanes, having predictors at multiple levels can revel correlation between
+# individual-level variables and group residuals. We can account for this by including 
+# the average of the individual predictors as a covariate in the model for the group intercept
+############
+
+# create new variables for mean of floor across counties
+xbar = srrs_mn.groupby('county')['floor'].mean().rename(county_lookup).values
+x_mean = xbar[county]
+
+contextual_effect = """
+data {
+	int<lower = 0> J;
+	int<lower = 0> N;
+	int<lower = 1, upper = J> county[N];
+	vector[N] u;
+	vector[N] x;
+	vector[N] x_mean;
+	vector[N] y;
+}
+parameters {
+	vector[J] a;
+	vector[3] b;
+	real mu_a;
+	real<lower = 0, upper = 100> sigma_a;
+	real<lower = 0, upper = 100> sigma_y;
+}
+transformed parameters{
+	vector[N] y_hat;
+
+	for (i in 1:N)
+		y_hat[i] = a[county[i]] + b[1] * u[i] + b[2] * x[i] + b[3] * x_mean[i];
+}
+model{
+	mu_a ~ normal(0, 1);
+	a ~ normal(mu_a, sigma_a);
+	b ~ normal(0, 1);
+	y ~ normal(y_hat, sigma_y);
+}"""
+
+contextual_effect_data = {'N': len(log_radon),
+						'J': len(n_county),
+						'county': county + 1,
+						'u': u,
+						'x': floor_measure,
+						'x_mean': x_mean,
+						'y': log_radon}
+
+contextual_effect_fit = pystan.stan(model_code = contextual_effect,
+									data = contextual_effect_data,
+									iter = 2000,
+									chains = 2)
+
+contextual_effect_fit['b'].mean(axis = 0)
+contextual_effect_fit.plot('b')
+plt.show()
+
+# prediction
+# there are two types of prediction can be made in a multilevel model
+# a new individual within an existing group
+# a new individual within a new group
+
+# say we want to predict 'ST LOUIS', 69, a new house without basement(x = 1)
+
+contextual_pred = """
+data {
+	int<lower = 0> J;
+	int<lower = 0> N;
+	int<lower = 0, upper=J> stl;
+	real u_stl;
+	real xbar_stl;
+	int<lower = 1, upper = J> county[N];
+	vector[N] u;
+	vector[N] x;
+	vector[N] x_mean;
+	vector[N] y;
+}
+parameters {
+	vector[J] a;
+	vector[3] b;
+	real mu_a;
+	real<lower = 0, upper = 100> sigma_a;
+	real<lower = 0, upper = 100> sigma_y;
+}
+transformed parameters{
+	vector[N] y_hat;
+	real stl_mu;
+
+	for (i in 1:N)
+		y_hat[i] = a[county[i]] + b[1] * u[i] + b[2] * x[i] + b[3] * x_mean[i];
+
+	stl_mu = a[stl + 1] + u_stl*b[1] + b[2] +  xbar_stl * b[3];
+}
+model{
+	mu_a ~ normal(0, 1);
+	a ~ normal(mu_a, sigma_a);
+	b ~ normal(0, 1);
+	y ~ normal(y_hat, sigma_y);
+}
+generated quantities{
+	real y_stl;
+	y_stl = normal_rng(stl_mu, sigma_y);
+}
+"""
+contextual_pred_data = {'N': len(log_radon),
+						'J': len(n_county),
+						'county': county + 1,
+						'u': u,
+						'x_mean': x_mean,
+						'x': floor_measure,
+						'y': log_radon,
+						'stl': 69,
+						'u_stl': np.log(cty_mn[cty_mn.cty == 'STLOUIS'].Uppm.values)[0],
+						'xbar_stl': xbar[69]}
+
+contextual_pred_fit = pystan.stan(model_code = contextual_pred, 
+								data = contextual_pred_data,
+								iter = 2000,
+								chains = 2)
+
+contextual_pred_fit.plot('y_stl')
+plt.show()
+
