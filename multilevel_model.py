@@ -417,4 +417,185 @@ plt.show()
 #############
 # Varying slope model
 # y[i] = a + beta[j, i]*x[i] + e[i]
-#
+# allows counties to vary according to how the location of measurement influences the radon reading
+#############
+
+varying_slope = """
+data{
+	int<lower = 0> J;
+	int<lower = 0> N;
+	int<lower = 1, upper = J> county[N];
+	vector[N] x;
+	vector[N] y;
+}
+parameters{
+	real a;
+	vector[J] b;
+	real mu_b;
+	real<lower = 0, upper = 100> sigma_b;
+	real<lower = 0, upper = 100> sigma_y;
+}
+transformed parameters{
+	
+	vector[N] y_hat;
+
+	for (i in 1:N)
+		y_hat[i] = a + x[i] * b[county[i]];
+}
+model{
+	sigma_b ~ uniform(0, 100);
+	b ~ normal(mu_b, sigma_b);
+
+	a ~ normal(0, 1);
+
+	sigma_y ~ uniform(0, 100);
+	y ~ normal(y_hat, sigma_y);
+}"""
+
+varying_slope_data = {'N': len(log_radon),
+						'J': len(n_county),
+						'county': county + 1,
+						'x': floor_measure,
+						'y': log_radon}
+
+varying_slope_fit = pystan.stan(model_code = varying_slope, 
+								data = varying_slope_data,
+								iter = 1000,
+								chains = 2)
+
+b_sample = pd.DataFrame(varying_slope_fit['b'])
+
+plt.figure(figsize = (16, 6))
+sns.boxplot(data = b_sample, whis = np.inf, color = 'c')
+plt.show()
+
+xvals = np.arange(2)
+b = varying_slopt_fit['a'].mean()
+m = varying_slope_fit['b'].mean(axis = 0)
+
+for mi in m:
+	plt.plot(xvals, mi * xvals + b, 'bo-', alpha = 0.4)
+
+plt.xlim(-0.2. 1.2)
+plt.show()
+
+############
+# Varying intercept and slope model
+# y[i] = a[j,i] + b[j, i]*x[i] + e[i]
+# The most general model allows both the intercept and slope to vary by county
+############
+
+varying_intercept_slope = """
+data{
+	int<lower = 0> N;
+	int<lower = 0> J;
+	vector[N] x;
+	vector[N] y;
+	int county[N];
+}
+parameters{
+	real<lower = 0> sigma;
+	real<lower = 0> sigma_a;
+	real<lower = 0> sigma_b;
+	vector[J] a;
+	vector[J] b;
+	real mu_a;
+	real mu_b;
+}
+model{
+	mu_a ~ normal(0, 100);
+	mu_b ~ normal(0, 100);
+
+	a ~ normal(mu_a, sigma_a);
+	b ~ normal(mu_a, sigma_b);
+
+	y ~ normal(a[county] + b[county] .* x, sigma);
+}"""
+
+varying_intercept_slope_data = {'N': len(log_radon),
+								'J': len(n_county),
+								'county': county + 1,
+								'x': floor_measure,
+								'y': log_radon}
+
+varying_intercept_slope_fit = pystan.stan(model_code = varying_intercept_slope,
+										data = varying_intercept_slope_data,
+										iter = 1000,
+										chains = 2)
+
+xvals = np.arange(2)
+b = varying_intercept_slope_fit['a'].mean(axis = 0)
+m = varying_intercept_slope_fit['b'].mean(axis = 0)
+for bi, mi in zip(b, m):
+	plt.plot(xvals, bi + mi * xvals, 'bo-', alpha = 0.4)
+
+plt.xlim(-0.1, 1.1)
+
+plt.show()
+
+#######
+# Adding group level predictors
+#######
+
+hierarchical_intercept = """
+data{
+	int<lower = 0> J;
+	int<lower = 0> N;
+	int<lower = 1, upper = J> county[N];
+	vector[N] u;
+	vector[N] x;
+	vector[N] y;
+}
+parameters{
+	vector[J] a;
+	vector[2] b;
+	real mu_a;
+	real<lower = 0, upper = 100> sigma_a;
+	real<lower = 0, upper = 100> sigma_y;
+}
+transformed parameters {
+	vector[N] y_hat;
+	vector[N] m;
+
+	for (i in 1:N){
+		m[i] = a[county[i]] + u[i] * b[1];
+		y_hat[i] = m[i] + x[i] * b[2];	
+	}
+}
+model{
+	mu_a ~ normal(0, 1);
+	a ~ normal(mu_a, sigma_a);
+	b ~ normal(0, 1);
+	y ~ normal(y_hat, sigma_y);
+}"""
+
+hierarchical_intercept_data = {'N': len(log_radon),
+								'J': len(n_county),
+								'county': county + 1,
+								'u': u,
+								'x': floor_measure,
+								'y': log_radon}
+
+hierarchical_intercept_fit = pystan.stan(model_code = hierarchical_intercept, 
+										data = hierarchical_intercept_data,
+										iter = 2000,
+										chains = 2)
+
+m_means = hierarchical_intercept_fit['m'].mean(axis = 0)
+plt.scatter(u, m_means)
+
+g0 = hierarchical_intercept_fit['mu_a'].mean()
+g1 = hierarchical_intercept_fit['b'][:,0].mean()
+xvals = np.linspace(-1, 0.8)
+plt.plot(xvals, g0+ g1* xvals, 'k--')
+plt.xlim(-1, 0.8)
+
+m_se = hierarchical_intercept_fit['m'].std(axis = 0)
+
+for ui, m, se in zip(u, m_means, m_se):
+	plt.plot([ui, ui], [m-se, m+se], 'b-')
+
+plt.xlabel('County-level uranium')
+plt.ylabel('Intercept estimate')
+plt.show()
+
